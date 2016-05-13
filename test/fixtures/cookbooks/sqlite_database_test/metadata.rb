@@ -1,4 +1,4 @@
-name 'postgresql_database_test'
+name 'sqlite_database_test'
 version '0.0.1'
 
 depends 'database'

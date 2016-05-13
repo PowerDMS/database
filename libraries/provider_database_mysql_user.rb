@@ -38,6 +38,8 @@ class Chef
             test_sql_results.each do |r|
               user_present = true if r['User'] == new_resource.username
             end
+
+            password_up_to_date = !user_present || test_user_password
           ensure
             close_test_client
           end
@@ -54,6 +56,8 @@ class Chef
               end
             end
           end
+
+          update_user_password unless password_up_to_date
         end
 
         action :drop do
@@ -89,7 +93,7 @@ class Chef
         action :grant do
           # gratuitous function
           def ishash?
-            return true if (/(\A\*[0-9A-F]{40}\z)/i).match(new_resource.password)
+            return true if /(\A\*[0-9A-F]{40}\z)/i =~ new_resource.password
           end
 
           db_name = new_resource.database_name ? "`#{new_resource.database_name}`" : '*'
@@ -114,6 +118,8 @@ class Chef
                 incorrect_privs = true if r[key] != 'Y'
               end
             end
+
+            password_up_to_date = incorrect_privs || test_user_password
           ensure
             close_test_client
           end
@@ -125,7 +131,11 @@ class Chef
                 repair_sql = "GRANT #{new_resource.privileges.join(',')}"
                 repair_sql += " ON #{db_name}.#{tbl_name}"
                 repair_sql += " TO '#{new_resource.username}'@'#{new_resource.host}' IDENTIFIED BY"
-                repair_sql += " '#{new_resource.password}'"
+                repair_sql += if new_resource.password.is_a?(MysqlPassword)
+                                " PASSWORD '#{new_resource.password}'"
+                              else
+                                " '#{new_resource.password}'"
+                              end
                 repair_sql += ' REQUIRE SSL' if new_resource.require_ssl
                 repair_sql += ' WITH GRANT OPTION' if new_resource.grant_option
 
@@ -136,6 +146,9 @@ class Chef
                 close_repair_client
               end
             end
+          else
+            # The grants are correct, but perhaps the password needs updating?
+            update_user_password unless password_up_to_date
           end
         end
 
@@ -237,13 +250,13 @@ class Chef
           ]
 
           # convert :all to the individual db or global privs
-          if new_resource.privileges == [:all] && new_resource.database_name
-            desired_privs = possible_db_privs
-          elsif new_resource.privileges == [:all]
-            desired_privs = possible_global_privs
-          else
-            desired_privs = new_resource.privileges
-          end
+          desired_privs = if new_resource.privileges == [:all] && new_resource.database_name
+                            possible_db_privs
+                          elsif new_resource.privileges == [:all]
+                            possible_global_privs
+                          else
+                            new_resource.privileges
+                          end
           desired_privs
         end
 
@@ -291,6 +304,59 @@ class Chef
           result = key.to_s.downcase.tr('_', ' ').gsub('repl ', 'replication ').gsub('create tmp table', 'create temporary tables').gsub('show db', 'show databases')
           result = result.gsub(/ priv$/, '')
           result
+        end
+
+        def test_user_password
+          if database_has_password_column(test_client)
+            test_sql = 'SELECT User,Host,Password FROM mysql.user ' \
+                       "WHERE User='#{new_resource.username}' AND Host='#{new_resource.host}' "
+            test_sql += if new_resource.password.is_a? MysqlPassword
+                          "AND Password='#{new_resource.password}'"
+                        else
+                          "AND Password=PASSWORD('#{new_resource.password}')"
+                        end
+          else
+            test_sql = 'SELECT User,Host,authentication_string FROM mysql.user ' \
+                       "WHERE User='#{new_resource.username}' AND Host='#{new_resource.host}' " \
+                       "AND plugin='mysql_native_password' "
+            test_sql += if new_resource.password.is_a? MysqlPassword
+                          "AND authentication_string='#{new_resource.password}'"
+                        else
+                          "AND authentication_string=PASSWORD('#{new_resource.password}')"
+                        end
+          end
+          test_client.query(test_sql).size > 0
+        end
+
+        def update_user_password
+          converge_by "Updating password of user '#{new_resource.username}'@'#{new_resource.host}'" do
+            begin
+              if database_has_password_column(repair_client)
+                repair_sql = "SET PASSWORD FOR '#{new_resource.username}'@'#{new_resource.host}' = "
+                repair_sql += if new_resource.password.is_a? MysqlPassword
+                                "'#{new_resource.password}'"
+                              else
+                                " PASSWORD('#{new_resource.password}')"
+                              end
+              else
+                # "ALTER USER is now the preferred statement for assigning passwords."
+                # http://dev.mysql.com/doc/refman/5.7/en/set-password.html
+                repair_sql = "ALTER USER '#{new_resource.username}'@'#{new_resource.host}' "
+                repair_sql += if new_resource.password.is_a? MysqlPassword
+                                "IDENTIFIED WITH mysql_native_password AS '#{new_resource.password}'"
+                              else
+                                "IDENTIFIED BY '#{new_resource.password}'"
+                              end
+              end
+              repair_client.query(repair_sql)
+            ensure
+              close_repair_client
+            end
+          end
+        end
+
+        def database_has_password_column(client)
+          client.query('SHOW COLUMNS FROM mysql.user WHERE Field="Password"').size > 0
         end
       end
     end
