@@ -26,7 +26,12 @@ class Chef
 
         def load_current_resource
           Gem.clear_paths
-          require 'tiny_tds'
+          begin
+            require 'tiny_tds'
+          rescue LoadError
+            Chef::Log.fatal('Could not load the required tiny_tds gem. Make sure to install this in your wrapper cookbook')
+            raise
+          end
           @current_resource = Chef::Resource::Database.new(@new_resource.name)
           @current_resource.database_name(@new_resource.database_name)
           @current_resource
@@ -109,12 +114,20 @@ class Chef
 
         def db
           @db ||= begin
-            ::TinyTds::Client.new(
+            connection = ::TinyTds::Client.new(
               host: @new_resource.connection[:host],
               username: @new_resource.connection[:username],
               password: @new_resource.connection[:password],
-              port: @new_resource.connection[:port] || 1433
+              port: @new_resource.connection[:port] || 1433,
+              timeout: @new_resource.connection[:timeout] || 120,
+              options: @new_resource.connection[:options] || {}
             )
+            if new_resource.connection.include?(:options)
+              @new_resource.connection[:options].each do |key, value|
+                connection.execute("SET #{key} #{value}").do
+              end
+            end
+            connection
           end
         end
 

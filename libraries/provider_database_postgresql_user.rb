@@ -28,7 +28,12 @@ class Chef
 
         def load_current_resource
           Gem.clear_paths
-          require 'pg'
+          begin
+            require 'pg'
+          rescue LoadError
+            Chef::Log.fatal('Could not load the required pg gem. Make sure to include the database::postgresql or postgresql::ruby recipes in your runlist')
+            raise
+          end
           @current_resource = Chef::Resource::DatabaseUser.new(@new_resource.name)
           @current_resource.username(@new_resource.name)
           @current_resource
@@ -55,7 +60,7 @@ class Chef
               options += " #{Chef::Resource::PostgresqlDatabaseUser::SUPERUSER_DEFAULT ? 'SUPERUSER' : 'NOSUPERUSER'}" unless @new_resource.respond_to?(:superuser)
 
               statement = "CREATE USER \"#{@new_resource.username}\""
-              statement += " WITH #{options}" if options.length > 0
+              statement += " WITH #{options}" unless options.empty?
 
               db('template1').query(statement)
               @new_resource.updated_by_last_action(true)
