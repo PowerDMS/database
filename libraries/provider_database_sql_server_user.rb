@@ -42,7 +42,7 @@ class Chef
             if @new_resource.windows_user
               db.execute("CREATE LOGIN [#{@new_resource.username}] FROM WINDOWS").do
             else
-              db.execute("CREATE LOGIN [#{@new_resource.username}] WITH PASSWORD = '#{@new_resource.password}', CHECK_POLICY = OFF").do
+              db.execute("CREATE LOGIN [#{@new_resource.username}] WITH PASSWORD = '#{@new_resource.password}', CHECK_EXPIRATION=OFF, CHECK_POLICY = OFF").do
             end
             @new_resource.updated_by_last_action(true)
           end
